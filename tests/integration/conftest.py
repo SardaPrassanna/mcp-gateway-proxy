@@ -1,0 +1,109 @@
+import json
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping, Sequence
+from typing import Any
+
+import httpx
+import pytest_asyncio
+
+from mcp_gateway.config.upstream import UpstreamServerConfig
+from mcp_gateway.main import create_app
+from mcp_gateway.routing.registry import UpstreamRegistry
+from mcp_gateway.routing.router import StaticRouter, get_router
+
+Scope = MutableMapping[str, Any]
+Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
+Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+GatewayFactory = Callable[
+    [Sequence[UpstreamServerConfig], httpx.AsyncBaseTransport], Awaitable[httpx.AsyncClient]
+]
+
+
+async def json_echo_upstream(scope: Scope, receive: Receive, send: Send) -> None:
+    """A minimal ASGI upstream that echoes the request body and the correlation id it received."""
+    assert scope["type"] == "http"
+    body = b""
+    while True:
+        message = await receive()
+        body += message.get("body", b"")
+        if not message.get("more_body", False):
+            break
+
+    headers = {key.decode().lower(): value.decode() for key, value in scope["headers"]}
+    payload = json.loads(body) if body else None
+    response_body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "result": {"echo": payload},
+            "received_correlation_id": headers.get("x-request-id"),
+        }
+    ).encode()
+
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send({"type": "http.response.body", "body": response_body})
+
+
+def status_code_upstream(status: int) -> Callable[[Scope, Receive, Send], Awaitable[None]]:
+    """An ASGI upstream that always responds `status` with an empty JSON body."""
+
+    async def _app(scope: Scope, receive: Receive, send: Send) -> None:
+        assert scope["type"] == "http"
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    return _app
+
+
+def raising_transport(make_exc: Callable[[httpx.Request], Exception]) -> httpx.MockTransport:
+    """A transport whose every request raises the exception `make_exc` builds for it.
+
+    Used to simulate network-level failures (connection refused, timeout) without
+    depending on real sockets or a real MCP server.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        raise make_exc(request)
+
+    return httpx.MockTransport(_handler)
+
+
+@pytest_asyncio.fixture
+async def gateway_factory() -> AsyncIterator[GatewayFactory]:
+    clients: list[httpx.AsyncClient] = []
+
+    async def _create(
+        upstreams: Sequence[UpstreamServerConfig],
+        upstream_transport: httpx.AsyncBaseTransport,
+    ) -> httpx.AsyncClient:
+        app = create_app()
+        app.dependency_overrides[get_router] = lambda: StaticRouter(UpstreamRegistry(upstreams))
+
+        upstream_client = httpx.AsyncClient(transport=upstream_transport)
+        app.state.http_client = upstream_client
+        clients.append(upstream_client)
+
+        gateway_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://gateway.test"
+        )
+        clients.append(gateway_client)
+        return gateway_client
+
+    yield _create
+
+    for client in clients:
+        await client.aclose()

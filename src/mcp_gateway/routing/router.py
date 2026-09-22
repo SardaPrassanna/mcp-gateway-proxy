@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+from functools import lru_cache
 
+from mcp_gateway.config.gateway import get_gateway_settings
 from mcp_gateway.config.upstream import UpstreamServerConfig
 from mcp_gateway.routing.registry import UpstreamRegistry
 
@@ -29,3 +31,10 @@ class StaticRouter(Router):
 
     def resolve(self, upstream_id: str) -> UpstreamServerConfig:
         return self._registry.get(upstream_id)
+
+
+@lru_cache
+def get_router() -> Router:
+    """Return the process-wide router, built once from gateway settings."""
+    registry = UpstreamRegistry.from_settings(get_gateway_settings())
+    return StaticRouter(registry)
