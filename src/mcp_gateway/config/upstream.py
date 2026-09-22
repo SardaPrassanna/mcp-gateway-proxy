@@ -14,6 +14,10 @@ class UpstreamServerConfig(BaseModel):
     url: HttpUrl
     description: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0, le=300)
+    enabled: bool = Field(
+        default=True,
+        description="Whether the gateway may currently route requests to this upstream.",
+    )
 
     @field_validator("name")
     @classmethod

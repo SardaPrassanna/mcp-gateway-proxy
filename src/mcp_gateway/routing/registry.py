@@ -26,13 +26,20 @@ class UpstreamRegistry:
         return cls(settings.upstreams)
 
     def get(self, upstream_id: str) -> UpstreamServerConfig:
-        try:
-            return self._by_name[upstream_id]
-        except KeyError:
-            raise UnknownUpstreamError(upstream_id) from None
+        """Return the routable upstream for `upstream_id`.
+
+        A disabled upstream is treated identically to an unconfigured one:
+        callers cannot distinguish "unknown" from "disabled", which avoids
+        leaking the existence of upstreams that are not currently routable.
+        """
+        upstream = self._by_name.get(upstream_id)
+        if upstream is None or not upstream.enabled:
+            raise UnknownUpstreamError(upstream_id)
+        return upstream
 
     def __contains__(self, upstream_id: str) -> bool:
-        return upstream_id in self._by_name
+        upstream = self._by_name.get(upstream_id)
+        return upstream is not None and upstream.enabled
 
     def __iter__(self) -> Iterator[UpstreamServerConfig]:
         return iter(self._by_name.values())

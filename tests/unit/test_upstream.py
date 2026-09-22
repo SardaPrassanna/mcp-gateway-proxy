@@ -30,3 +30,15 @@ def test_upstream_rejects_empty_name() -> None:
 def test_upstream_rejects_non_positive_timeout() -> None:
     with pytest.raises(ValidationError):
         UpstreamServerConfig(name="example", url="http://localhost:9000", timeout_seconds=0)
+
+
+def test_upstream_enabled_defaults_to_true() -> None:
+    upstream = UpstreamServerConfig(name="example", url="http://localhost:9000")
+
+    assert upstream.enabled is True
+
+
+def test_upstream_can_be_explicitly_disabled() -> None:
+    upstream = UpstreamServerConfig(name="example", url="http://localhost:9000", enabled=False)
+
+    assert upstream.enabled is False
