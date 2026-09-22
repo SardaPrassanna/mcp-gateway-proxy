@@ -82,6 +82,46 @@ def raising_transport(make_exc: Callable[[httpx.Request], Exception]) -> httpx.M
     return httpx.MockTransport(_handler)
 
 
+class RecordingTransport(httpx.MockTransport):
+    """A transport that records every request it receives and returns a fixed response.
+
+    Lets a test assert exactly what left the gateway (URL, headers) rather than
+    only what came back, which is what proves the gateway never honors a
+    client-supplied forwarding target.
+    """
+
+    def __init__(
+        self,
+        status_code: int = 200,
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.requests: list[httpx.Request] = []
+        body = json.dumps(json_body if json_body is not None else {"jsonrpc": "2.0", "result": {}})
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            return httpx.Response(
+                status_code,
+                content=body.encode(),
+                headers={"content-type": "application/json", **(headers or {})},
+            )
+
+        super().__init__(_handler)
+
+
+def multi_route_transport(routes: dict[str, httpx.Response]) -> httpx.MockTransport:
+    """A transport that dispatches by request path, simulating several distinct upstreams."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        response = routes.get(request.url.path)
+        if response is None:
+            return httpx.Response(404, json={"error": "no route configured for test"})
+        return response
+
+    return httpx.MockTransport(_handler)
+
+
 @pytest_asyncio.fixture
 async def gateway_factory() -> AsyncIterator[GatewayFactory]:
     clients: list[httpx.AsyncClient] = []
