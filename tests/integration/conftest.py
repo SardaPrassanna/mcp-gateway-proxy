@@ -1,9 +1,10 @@
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import pytest_asyncio
+from fastapi import FastAPI
 
 from mcp_gateway.config.upstream import UpstreamServerConfig
 from mcp_gateway.main import create_app
@@ -13,9 +14,16 @@ from mcp_gateway.routing.router import StaticRouter, get_router
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
 Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
-GatewayFactory = Callable[
-    [Sequence[UpstreamServerConfig], httpx.AsyncBaseTransport], Awaitable[httpx.AsyncClient]
-]
+DependencyOverrides = dict[Callable[..., Any], Callable[..., Any]]
+
+
+class GatewayFactory(Protocol):
+    async def __call__(
+        self,
+        upstreams: Sequence[UpstreamServerConfig],
+        upstream_transport: httpx.AsyncBaseTransport,
+        dependency_overrides: DependencyOverrides | None = None,
+    ) -> httpx.AsyncClient: ...
 
 
 async def json_echo_upstream(scope: Scope, receive: Receive, send: Send) -> None:
@@ -129,9 +137,12 @@ async def gateway_factory() -> AsyncIterator[GatewayFactory]:
     async def _create(
         upstreams: Sequence[UpstreamServerConfig],
         upstream_transport: httpx.AsyncBaseTransport,
+        dependency_overrides: DependencyOverrides | None = None,
     ) -> httpx.AsyncClient:
-        app = create_app()
+        app: FastAPI = create_app()
         app.dependency_overrides[get_router] = lambda: StaticRouter(UpstreamRegistry(upstreams))
+        for dependency, override in (dependency_overrides or {}).items():
+            app.dependency_overrides[dependency] = override
 
         upstream_client = httpx.AsyncClient(transport=upstream_transport)
         app.state.http_client = upstream_client

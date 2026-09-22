@@ -1,7 +1,7 @@
 import os
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -49,6 +49,20 @@ class GatewaySettings(BaseSettings):
         if duplicates:
             raise ValueError(f"duplicate upstream names configured: {sorted(duplicates)}")
         return value
+
+    @model_validator(mode="after")
+    def _validate_client_upstream_references(self) -> "GatewaySettings":
+        known_names = {upstream.name for upstream in self.upstreams}
+        for client in self.auth.clients:
+            if client.allowed_upstreams is None:
+                continue
+            unknown = client.allowed_upstreams - known_names
+            if unknown:
+                raise ValueError(
+                    f"auth client {client.client_id!r} references unknown upstream(s): "
+                    f"{sorted(unknown)}"
+                )
+        return self
 
     @classmethod
     def settings_customise_sources(

@@ -7,6 +7,8 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from mcp_gateway.auth.authenticator import ApiKeyAuthenticator, get_authenticator
+from mcp_gateway.auth.errors import AuthenticationError
 from mcp_gateway.config.settings import get_application_settings
 from mcp_gateway.proxy.errors import UpstreamConnectionError, UpstreamTimeoutError
 from mcp_gateway.proxy.http_proxy import CORRELATION_ID_HEADER, MCPHttpProxy
@@ -39,8 +41,15 @@ async def proxy_mcp_request(
     request: Request,
     mcp_router: Annotated[Router, Depends(get_router)],
     proxy: Annotated[MCPHttpProxy, Depends(get_mcp_http_proxy)],
+    authenticator: Annotated[ApiKeyAuthenticator, Depends(get_authenticator)],
 ) -> JSONResponse | StreamingResponse:
     correlation_id = request.headers.get(CORRELATION_ID_HEADER) or str(uuid.uuid4())
+
+    try:
+        principal = authenticator.authenticate(request.headers.get(authenticator.header_name))
+    except AuthenticationError:
+        logger.info("rejected unauthenticated request: correlation_id=%s", correlation_id)
+        return _error_response(401, correlation_id, "unauthorized")
 
     try:
         upstream = mcp_router.resolve(upstream_id)
@@ -51,6 +60,15 @@ async def proxy_mcp_request(
             correlation_id,
         )
         return _error_response(404, correlation_id, "unknown upstream", upstream_id=upstream_id)
+
+    if not principal.can_access(upstream.name):
+        logger.info(
+            "rejected request: client=%s not authorized for upstream=%s correlation_id=%s",
+            principal.client_id,
+            upstream.name,
+            correlation_id,
+        )
+        return _error_response(403, correlation_id, "forbidden", upstream_id=upstream_id)
 
     body = await request.body()
 
