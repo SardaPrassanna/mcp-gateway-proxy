@@ -6,11 +6,10 @@ from mcp.server.streamable_http import LAST_EVENT_ID_HEADER, MCP_SESSION_ID_HEAD
 from mcp.shared.inbound import MCP_PROTOCOL_VERSION_HEADER
 
 from mcp_gateway.config.upstream import UpstreamServerConfig
+from mcp_gateway.observability.correlation import CORRELATION_ID_HEADER
 from mcp_gateway.proxy.errors import UpstreamConnectionError, UpstreamTimeoutError
 
 logger = logging.getLogger(__name__)
-
-CORRELATION_ID_HEADER = "X-Request-ID"
 
 # Only headers meaningful to the MCP Streamable HTTP transport are forwarded in
 # either direction; nothing else (e.g. Host, Authorization, cookies) crosses the
