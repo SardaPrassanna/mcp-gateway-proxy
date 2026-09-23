@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import uuid
 from typing import Annotated
 
@@ -10,6 +11,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from mcp_gateway.auth.authenticator import ApiKeyAuthenticator, get_authenticator
 from mcp_gateway.auth.errors import AuthenticationError
 from mcp_gateway.config.settings import get_application_settings
+from mcp_gateway.middleware.errors import RateLimitExceededError
+from mcp_gateway.middleware.rate_limiter import RateLimiter, get_rate_limiter
 from mcp_gateway.proxy.errors import UpstreamConnectionError, UpstreamTimeoutError
 from mcp_gateway.proxy.http_proxy import CORRELATION_ID_HEADER, MCPHttpProxy
 from mcp_gateway.routing.errors import UnknownUpstreamError
@@ -42,6 +45,7 @@ async def proxy_mcp_request(
     mcp_router: Annotated[Router, Depends(get_router)],
     proxy: Annotated[MCPHttpProxy, Depends(get_mcp_http_proxy)],
     authenticator: Annotated[ApiKeyAuthenticator, Depends(get_authenticator)],
+    rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> JSONResponse | StreamingResponse:
     correlation_id = request.headers.get(CORRELATION_ID_HEADER) or str(uuid.uuid4())
 
@@ -50,6 +54,19 @@ async def proxy_mcp_request(
     except AuthenticationError:
         logger.info("rejected unauthenticated request: correlation_id=%s", correlation_id)
         return _error_response(401, correlation_id, "unauthorized")
+
+    try:
+        await rate_limiter.check(principal.client_id)
+    except RateLimitExceededError as exc:
+        retry_after = max(1, math.ceil(exc.retry_after_seconds))
+        logger.info(
+            "rejected request: client=%s exceeded rate limit correlation_id=%s",
+            principal.client_id,
+            correlation_id,
+        )
+        response = _error_response(429, correlation_id, "rate limit exceeded")
+        response.headers["Retry-After"] = str(retry_after)
+        return response
 
     try:
         upstream = mcp_router.resolve(upstream_id)
